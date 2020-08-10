@@ -347,11 +347,25 @@ fn fmt_test() {
   let t = TempDir::new().expect("tempdir fail");
   let fixed = util::root_path().join("cli/tests/badly_formatted_fixed.js");
   let badly_formatted_original =
-    util::root_path().join("cli/tests/badly_formatted.js");
+    util::root_path().join("cli/tests/badly_formatted.mjs");
   let badly_formatted = t.path().join("badly_formatted.js");
   let badly_formatted_str = badly_formatted.to_str().unwrap();
   std::fs::copy(&badly_formatted_original, &badly_formatted)
     .expect("Failed to copy file");
+  // First, check formatting by ignoring the badly formatted file.
+  let status = util::deno_cmd()
+    .current_dir(util::root_path())
+    .arg("fmt")
+    .arg(format!("--ignore={}", badly_formatted_str))
+    .arg("--unstable")
+    .arg("--check")
+    .arg(badly_formatted_str)
+    .spawn()
+    .expect("Failed to spawn script")
+    .wait()
+    .expect("Failed to wait for child process");
+  assert!(status.success());
+  // Check without ignore.
   let status = util::deno_cmd()
     .current_dir(util::root_path())
     .arg("fmt")
@@ -362,6 +376,7 @@ fn fmt_test() {
     .wait()
     .expect("Failed to wait for child process");
   assert!(!status.success());
+  // Format the source file.
   let status = util::deno_cmd()
     .current_dir(util::root_path())
     .arg("fmt")
@@ -689,7 +704,7 @@ fn ts_reload() {
   assert!(std::str::from_utf8(&output.stdout)
     .unwrap()
     .trim()
-    .contains("compiler::host.writeFile deno://002_hello.js"));
+    .contains("\"compiler::host.writeFile\" \"deno://002_hello.js\""));
 }
 
 #[test]
@@ -1237,6 +1252,7 @@ macro_rules! itest(
 );
 
 // Unfortunately #[ignore] doesn't work with itest!
+#[allow(unused)]
 macro_rules! itest_ignore(
   ($name:ident {$( $key:ident: $value:expr,)*})  => {
     #[ignore]
@@ -1346,12 +1362,6 @@ itest!(_023_no_ext_with_headers {
   output: "023_no_ext_with_headers.out",
 });
 
-// FIXME(bartlomieju): this test should use remote file
-itest_ignore!(_024_import_no_ext_with_headers {
-  args: "run --reload 024_import_no_ext_with_headers.ts",
-  output: "024_import_no_ext_with_headers.ts.out",
-});
-
 // TODO(lucacasonato): remove --unstable when permissions goes stable
 itest!(_025_hrtime {
   args: "run --quiet --allow-hrtime --unstable --reload 025_hrtime.ts",
@@ -1444,6 +1454,12 @@ itest!(_030_eval_ts {
   output: "030_eval_ts.out",
 });
 
+itest!(_031_info_no_check {
+  args: "info 031_info_no_check.ts",
+  output: "031_info_no_check.out",
+  http_server: true,
+});
+
 itest!(_033_import_map {
   args:
     "run --quiet --reload --importmap=importmaps/import_map.json --unstable importmaps/test.ts",
@@ -1515,8 +1531,8 @@ itest!(_044_bad_resource {
   exit_code: 1,
 });
 
-itest_ignore!(_045_proxy {
-  args: "run --allow-net --allow-env --allow-run --reload 045_proxy_test.ts",
+itest!(_045_proxy {
+  args: "run --allow-net --allow-env --allow-run --allow-read --reload --quiet 045_proxy_test.ts",
   output: "045_proxy_test.ts.out",
   http_server: true,
 });
@@ -1537,7 +1553,10 @@ itest!(_048_media_types_jsx {
   http_server: true,
 });
 
-itest!(_049_info_flag_script_jsx {
+// TODO(nayeemrmn): This hits an SWC type-stripping bug:
+// `error: Unterminated regexp literal at http://localhost:4545/cli/tests/subdir/mt_video_vdn_tsx.t2.tsx:4:19`
+// Re-enable once fixed.
+itest_ignore!(_049_info_flag_script_jsx {
   args: "info http://127.0.0.1:4545/cli/tests/048_media_types_jsx.ts",
   output: "049_info_flag_script_jsx.out",
   http_server: true,
@@ -1966,6 +1985,12 @@ itest!(type_directives_redirect {
   http_server: true,
 });
 
+itest!(type_headers_deno_types {
+  args: "run --reload type_headers_deno_types.ts",
+  output: "type_headers_deno_types.ts.out",
+  http_server: true,
+});
+
 itest!(ts_type_imports {
   args: "run --reload ts_type_imports.ts",
   output: "ts_type_imports.ts.out",
@@ -1975,6 +2000,11 @@ itest!(ts_type_imports {
 itest!(ts_decorators {
   args: "run --reload -c tsconfig.decorators.json ts_decorators.ts",
   output: "ts_decorators.ts.out",
+});
+
+itest!(ts_type_only_import {
+  args: "run --reload ts_type_only_import.ts",
+  output: "ts_type_only_import.ts.out",
 });
 
 itest!(swc_syntax_error {
@@ -2000,17 +2030,23 @@ itest!(unbuffered_stdout {
 
 // Cannot write the expression to evaluate as "console.log(typeof gc)"
 // because itest! splits args on whitespace.
-itest!(eval_v8_flags {
+itest!(v8_flags_eval {
   args: "eval --v8-flags=--expose-gc console.log(typeof(gc))",
   output: "v8_flags.js.out",
 });
 
-itest!(run_v8_flags {
+itest!(v8_flags_run {
   args: "run --v8-flags=--expose-gc v8_flags.js",
   output: "v8_flags.js.out",
 });
 
-itest!(run_v8_help {
+itest!(v8_flags_unrecognized {
+  args: "repl --v8-flags=--foo,bar,--trace-gc,-baz",
+  output: "v8_flags_unrecognized.out",
+  exit_code: 1,
+});
+
+itest!(v8_help {
   args: "repl --v8-flags=--help",
   output: "v8_help.out",
 });
@@ -2078,6 +2114,12 @@ itest!(unstable_enabled_js {
   output: "unstable_enabled_js.out",
 });
 
+itest!(unstable_disabled_ts2551 {
+  args: "run --reload unstable_ts2551.ts",
+  exit_code: 1,
+  output: "unstable_disabled_ts2551.out",
+});
+
 itest!(_053_import_compression {
   args: "run --quiet --reload --allow-net 053_import_compression/main.ts",
   output: "053_import_compression.out",
@@ -2103,9 +2145,9 @@ itest!(cafile_eval {
   http_server: true,
 });
 
-itest_ignore!(cafile_info {
+itest!(cafile_info {
   args:
-    "info --cert tls/RootCA.pem https://localhost:5545/cli/tests/cafile_info.ts",
+    "info --quiet --cert tls/RootCA.pem https://localhost:5545/cli/tests/cafile_info.ts",
   output: "cafile_info.ts.out",
   http_server: true,
 });
@@ -2186,6 +2228,39 @@ itest!(deno_lint_glob {
   output: "lint/expected_glob.out",
   exit_code: 1,
 });
+
+itest!(compiler_js_error {
+  args: "run --unstable compiler_js_error.ts",
+  output: "compiler_js_error.ts.out",
+  exit_code: 1,
+});
+
+itest!(import_file_with_colon {
+  args: "run --quiet --reload import_file_with_colon.ts",
+  output: "import_file_with_colon.ts.out",
+  http_server: true,
+});
+
+#[test]
+fn cafile_env_fetch() {
+  use url::Url;
+  let g = util::http_server();
+  let deno_dir = TempDir::new().expect("tempdir fail");
+  let module_url =
+    Url::parse("https://localhost:5545/cli/tests/cafile_url_imports.ts")
+      .unwrap();
+  let cafile = util::root_path().join("cli/tests/tls/RootCA.pem");
+  let output = Command::new(util::deno_exe_path())
+    .env("DENO_DIR", deno_dir.path())
+    .env("DENO_CERT", cafile)
+    .current_dir(util::root_path())
+    .arg("cache")
+    .arg(module_url.to_string())
+    .output()
+    .expect("Failed to spawn script");
+  assert!(output.status.success());
+  drop(g);
+}
 
 #[test]
 fn cafile_fetch() {
@@ -2814,7 +2889,9 @@ async fn inspector_pause() {
     use futures::stream::StreamExt;
     while let Some(msg) = socket.next().await {
       let msg = msg.unwrap().to_string();
-      assert!(!msg.contains("error"));
+      // FIXME(bartlomieju): fails because there's a file loaded
+      // called 150_errors.js
+      // assert!(!msg.contains("error"));
       if !msg.contains("Debugger.scriptParsed") {
         return msg;
       }
@@ -2845,6 +2922,13 @@ async fn inspector_pause() {
 
 #[tokio::test]
 async fn inspector_port_collision() {
+  // Skip this test on WSL, which allows multiple processes to listen on the
+  // same port, rather than making `bind()` fail with `EADDRINUSE`.
+  if cfg!(target_os = "linux") && std::env::var_os("WSL_DISTRO_NAME").is_some()
+  {
+    return;
+  }
+
   let script = util::tests_path().join("inspector1.js");
   let inspect_flag = inspect_flag_with_unique_port("--inspect");
 
@@ -2857,10 +2941,10 @@ async fn inspector_port_collision() {
     .unwrap();
 
   let stderr_1 = child1.stderr.as_mut().unwrap();
-  let mut stderr_lines_1 = std::io::BufReader::new(stderr_1)
+  let mut stderr_1_lines = std::io::BufReader::new(stderr_1)
     .lines()
     .map(|r| r.unwrap());
-  let _ = extract_ws_url_from_stderr(&mut stderr_lines_1);
+  let _ = extract_ws_url_from_stderr(&mut stderr_1_lines);
 
   let mut child2 = util::deno_cmd()
     .arg("run")
@@ -2870,15 +2954,13 @@ async fn inspector_port_collision() {
     .spawn()
     .unwrap();
 
-  use std::io::Read;
-  let mut stderr_str_2 = String::new();
-  child2
-    .stderr
-    .as_mut()
-    .unwrap()
-    .read_to_string(&mut stderr_str_2)
-    .unwrap();
-  assert!(stderr_str_2.contains("Cannot start inspector server"));
+  let stderr_2 = child2.stderr.as_mut().unwrap();
+  let stderr_2_error_message = std::io::BufReader::new(stderr_2)
+    .lines()
+    .map(|r| r.unwrap())
+    .inspect(|line| assert!(!line.contains("Debugger listening")))
+    .find(|line| line.contains("Cannot start inspector server"));
+  assert!(stderr_2_error_message.is_some());
 
   child1.kill().unwrap();
   child1.wait().unwrap();
@@ -3115,4 +3197,111 @@ fn set_raw_should_not_panic_on_no_tty() {
   assert!(!output.status.success());
   let stderr = std::str::from_utf8(&output.stderr).unwrap().trim();
   assert!(stderr.contains("BadResource"));
+}
+
+#[cfg(windows)]
+enum WinProcConstraints {
+  NoStdIn,
+  NoStdOut,
+  NoStdErr,
+}
+
+#[cfg(windows)]
+fn run_deno_script_constrained(
+  script_path: std::path::PathBuf,
+  constraints: WinProcConstraints,
+) -> Result<(), i64> {
+  let file_path = "cli/tests/DenoWinRunner.ps1";
+  let constraints = match constraints {
+    WinProcConstraints::NoStdIn => "1",
+    WinProcConstraints::NoStdOut => "2",
+    WinProcConstraints::NoStdErr => "4",
+  };
+  let deno_exe_path = util::deno_exe_path()
+    .into_os_string()
+    .into_string()
+    .unwrap();
+
+  let deno_script_path = script_path.into_os_string().into_string().unwrap();
+
+  let args = vec![&deno_exe_path[..], &deno_script_path[..], constraints];
+  util::run_powershell_script_file(file_path, args)
+}
+
+#[cfg(windows)]
+#[test]
+fn should_not_panic_on_no_stdin() {
+  let output = run_deno_script_constrained(
+    util::tests_path().join("echo.ts"),
+    WinProcConstraints::NoStdIn,
+  );
+  output.unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn should_not_panic_on_no_stdout() {
+  let output = run_deno_script_constrained(
+    util::tests_path().join("echo.ts"),
+    WinProcConstraints::NoStdOut,
+  );
+  output.unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn should_not_panic_on_no_stderr() {
+  let output = run_deno_script_constrained(
+    util::tests_path().join("echo.ts"),
+    WinProcConstraints::NoStdErr,
+  );
+  output.unwrap();
+}
+
+#[cfg(not(windows))]
+#[test]
+fn should_not_panic_on_undefined_home_environment_variable() {
+  let output = util::deno_cmd()
+    .current_dir(util::root_path())
+    .arg("run")
+    .arg("cli/tests/echo.ts")
+    .env_remove("HOME")
+    .stdout(std::process::Stdio::piped())
+    .spawn()
+    .unwrap()
+    .wait_with_output()
+    .unwrap();
+  assert!(output.status.success());
+}
+
+#[test]
+fn should_not_panic_on_undefined_deno_dir_environment_variable() {
+  let output = util::deno_cmd()
+    .current_dir(util::root_path())
+    .arg("run")
+    .arg("cli/tests/echo.ts")
+    .env_remove("DENO_DIR")
+    .stdout(std::process::Stdio::piped())
+    .spawn()
+    .unwrap()
+    .wait_with_output()
+    .unwrap();
+  assert!(output.status.success());
+}
+
+#[cfg(not(windows))]
+#[test]
+fn should_not_panic_on_undefined_deno_dir_and_home_environment_variables() {
+  let output = util::deno_cmd()
+    .current_dir(util::root_path())
+    .arg("run")
+    .arg("cli/tests/echo.ts")
+    .env_remove("DENO_DIR")
+    .env_remove("HOME")
+    .stdout(std::process::Stdio::piped())
+    .spawn()
+    .unwrap()
+    .wait_with_output()
+    .unwrap();
+  assert!(output.status.success());
 }

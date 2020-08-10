@@ -147,6 +147,14 @@ pub async fn run_all_servers() {
       warp::redirect(u)
     })
     .or(
+      warp::path!("a" / "b" / "c")
+        .and(warp::header::<String>("x-location"))
+        .map(|token: String| {
+          let uri: Uri = token.parse().unwrap();
+          warp::redirect(uri)
+        }),
+    )
+    .or(
       warp::any()
         .and(warp::path::peek())
         .and(warp::fs::dir(root_path()))
@@ -285,6 +293,39 @@ pub async fn run_all_servers() {
       );
       res
     }))
+    .or(warp::path!("type_headers_deno_types.foo.js").map(|| {
+      let mut res = Response::new(Body::from("export function foo(text) { console.log(text); }"));
+      let h = res.headers_mut();
+      h.insert(
+        "Content-type",
+        HeaderValue::from_static("application/javascript"),
+      );
+      h.insert(
+        "X-TypeScript-Types",
+        HeaderValue::from_static(
+          "http://localhost:4545/type_headers_deno_types.d.ts",
+        ),
+      );
+      res
+    }))
+    .or(warp::path!("type_headers_deno_types.d.ts").map(|| {
+      let mut res = Response::new(Body::from("export function foo(text: number): void;"));
+      let h = res.headers_mut();
+      h.insert(
+        "Content-type",
+        HeaderValue::from_static("application/typescript"),
+      );
+      res
+    }))
+    .or(warp::path!("type_headers_deno_types.foo.d.ts").map(|| {
+      let mut res = Response::new(Body::from("export function foo(text: string): void;"));
+      let h = res.headers_mut();
+      h.insert(
+        "Content-type",
+        HeaderValue::from_static("application/typescript"),
+      );
+      res
+    }))
     .or(warp::path!("cli"/"tests"/"subdir"/"xTypeScriptTypesRedirect.d.ts").map(|| {
       let mut res = Response::new(Body::from(
         "import './xTypeScriptTypesRedirected.d.ts';",
@@ -311,6 +352,17 @@ pub async fn run_all_servers() {
       h.insert(
         "Content-type",
         HeaderValue::from_static("application/javascript"),
+      );
+      res
+    }))
+    .or(warp::path!("cli"/"tests"/"subdir"/"file_with_:_in_name.ts").map(|| {
+      let mut res = Response::new(Body::from(
+        "console.log('Hello from file_with_:_in_name.ts');",
+      ));
+      let h = res.headers_mut();
+      h.insert(
+        "Content-type",
+        HeaderValue::from_static("application/typescript"),
       );
       res
     }));
@@ -376,6 +428,19 @@ fn custom_headers(path: warp::path::Peek, f: warp::fs::File) -> Box<dyn Reply> {
     let f = with_header(f, "Content-Encoding", "gzip");
     let f = with_header(f, "Content-Type", "application/javascript");
     let f = with_header(f, "Content-Length", "39");
+    return Box::new(f);
+  }
+  if p.contains("cli/tests/encoding/") {
+    let charset = p
+      .split_terminator('/')
+      .last()
+      .unwrap()
+      .trim_end_matches(".ts");
+    let f = with_header(
+      f,
+      "Content-Type",
+      &format!("application/typescript;charset={}", charset)[..],
+    );
     return Box::new(f);
   }
 
@@ -589,6 +654,37 @@ pub fn run_python_script(script: &str) {
       script, stdout, stderr
     );
   }
+}
+
+pub fn run_powershell_script_file(
+  script_file_path: &str,
+  args: Vec<&str>,
+) -> Result<(), i64> {
+  let deno_dir = new_deno_dir();
+  let mut command = Command::new("powershell.exe");
+
+  command
+    .env("DENO_DIR", deno_dir.path())
+    .current_dir(root_path())
+    .arg("-file")
+    .arg(script_file_path);
+
+  for arg in args {
+    command.arg(arg);
+  }
+
+  let output = command.output().expect("failed to spawn script");
+  let stdout = String::from_utf8(output.stdout).unwrap();
+  let stderr = String::from_utf8(output.stderr).unwrap();
+  println!("{}", stdout);
+  if !output.status.success() {
+    panic!(
+      "{} executed with failing error code\n{}{}",
+      script_file_path, stdout, stderr
+    );
+  }
+
+  Ok(())
 }
 
 #[derive(Debug, Default)]

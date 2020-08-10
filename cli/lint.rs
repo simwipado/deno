@@ -12,7 +12,6 @@ use crate::file_fetcher::map_file_extension;
 use crate::fmt::collect_files;
 use crate::fmt::run_parallelized;
 use crate::fmt_errors;
-use crate::swc_ecma_parser::Syntax;
 use crate::swc_util;
 use deno_core::ErrBox;
 use deno_lint::diagnostic::LintDiagnostic;
@@ -24,6 +23,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use swc_ecmascript::parser::Syntax;
 
 pub async fn lint_files(args: Vec<String>) -> Result<(), ErrBox> {
   let target_files = collect_files(args)?;
@@ -96,11 +96,12 @@ fn get_rules() -> Vec<Box<dyn LintRule>> {
     rules::no_explicit_any::NoExplicitAny::new(),
     rules::no_extra_boolean_cast::NoExtraBooleanCast::new(),
     rules::no_extra_non_null_assertion::NoExtraNonNullAssertion::new(),
+    rules::no_extra_semi::NoExtraSemi::new(),
     rules::no_func_assign::NoFuncAssign::new(),
     rules::no_misused_new::NoMisusedNew::new(),
     rules::no_namespace::NoNamespace::new(),
     rules::no_new_symbol::NoNewSymbol::new(),
-    rules::no_obj_call::NoObjCall::new(),
+    rules::no_obj_calls::NoObjCalls::new(),
     rules::no_octal::NoOctal::new(),
     rules::no_prototype_builtins::NoPrototypeBuiltins::new(),
     rules::no_regex_spaces::NoRegexSpaces::new(),

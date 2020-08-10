@@ -17,7 +17,8 @@ unitTest({ perms: { read: true } }, function fstatSyncSuccess(): void {
   assert(fileInfo.size);
   assert(fileInfo.atime);
   assert(fileInfo.mtime);
-  assert(fileInfo.birthtime);
+  // The `birthtime` field is not available on Linux before kernel version 4.11.
+  assert(fileInfo.birthtime || Deno.build.os === "linux");
 
   Deno.close(file.rid);
 });
@@ -33,7 +34,8 @@ unitTest({ perms: { read: true } }, async function fstatSuccess(): Promise<
   assert(fileInfo.size);
   assert(fileInfo.atime);
   assert(fileInfo.mtime);
-  assert(fileInfo.birthtime);
+  // The `birthtime` field is not available on Linux before kernel version 4.11.
+  assert(fileInfo.birthtime || Deno.build.os === "linux");
 
   Deno.close(file.rid);
 });
@@ -59,7 +61,7 @@ unitTest(
     assert(tempInfo.atime !== null && now - tempInfo.atime.valueOf() < 1000);
     assert(tempInfo.mtime !== null && now - tempInfo.mtime.valueOf() < 1000);
     assert(
-      tempInfo.birthtime === null || now - tempInfo.birthtime.valueOf() < 1000
+      tempInfo.birthtime === null || now - tempInfo.birthtime.valueOf() < 1000,
     );
 
     const packageInfoByUrl = Deno.statSync(pathToAbsoluteFileUrl("README.md"));
@@ -67,7 +69,7 @@ unitTest(
     assert(!packageInfoByUrl.isSymlink);
 
     const modulesInfoByUrl = Deno.statSync(
-      pathToAbsoluteFileUrl("cli/tests/symlink_to_subdir")
+      pathToAbsoluteFileUrl("cli/tests/symlink_to_subdir"),
     );
     assert(modulesInfoByUrl.isDirectory);
     assert(!modulesInfoByUrl.isSymlink);
@@ -79,24 +81,26 @@ unitTest(
     const tempFileForUrl = Deno.makeTempFileSync();
     const tempInfoByUrl = Deno.statSync(
       new URL(
-        `file://${Deno.build.os === "windows" ? "/" : ""}${tempFileForUrl}`
-      )
+        `file://${Deno.build.os === "windows" ? "/" : ""}${tempFileForUrl}`,
+      ),
     );
     now = Date.now();
     assert(
-      tempInfoByUrl.atime !== null && now - tempInfoByUrl.atime.valueOf() < 1000
+      tempInfoByUrl.atime !== null &&
+        now - tempInfoByUrl.atime.valueOf() < 1000,
     );
     assert(
-      tempInfoByUrl.mtime !== null && now - tempInfoByUrl.mtime.valueOf() < 1000
+      tempInfoByUrl.mtime !== null &&
+        now - tempInfoByUrl.mtime.valueOf() < 1000,
     );
     assert(
       tempInfoByUrl.birthtime === null ||
-        now - tempInfoByUrl.birthtime.valueOf() < 1000
+        now - tempInfoByUrl.birthtime.valueOf() < 1000,
     );
 
     Deno.removeSync(tempFile, { recursive: true });
     Deno.removeSync(tempFileForUrl, { recursive: true });
-  }
+  },
 );
 
 unitTest({ perms: { read: false } }, function statSyncPerm(): void {
@@ -125,7 +129,7 @@ unitTest({ perms: { read: true } }, function lstatSyncSuccess(): void {
   assert(modulesInfo.isSymlink);
 
   const modulesInfoByUrl = Deno.lstatSync(
-    pathToAbsoluteFileUrl("cli/tests/symlink_to_subdir")
+    pathToAbsoluteFileUrl("cli/tests/symlink_to_subdir"),
   );
   assert(!modulesInfoByUrl.isDirectory);
   assert(modulesInfoByUrl.isSymlink);
@@ -159,7 +163,7 @@ unitTest(
     assert(!packageInfo.isSymlink);
 
     const packageInfoByUrl = await Deno.stat(
-      pathToAbsoluteFileUrl("README.md")
+      pathToAbsoluteFileUrl("README.md"),
     );
     assert(packageInfoByUrl.isFile);
     assert(!packageInfoByUrl.isSymlink);
@@ -169,7 +173,7 @@ unitTest(
     assert(!modulesInfo.isSymlink);
 
     const modulesInfoByUrl = await Deno.stat(
-      pathToAbsoluteFileUrl("cli/tests/symlink_to_subdir")
+      pathToAbsoluteFileUrl("cli/tests/symlink_to_subdir"),
     );
     assert(modulesInfoByUrl.isDirectory);
     assert(!modulesInfoByUrl.isSymlink);
@@ -189,30 +193,32 @@ unitTest(
     assert(tempInfo.mtime !== null && now - tempInfo.mtime.valueOf() < 1000);
 
     assert(
-      tempInfo.birthtime === null || now - tempInfo.birthtime.valueOf() < 1000
+      tempInfo.birthtime === null || now - tempInfo.birthtime.valueOf() < 1000,
     );
 
     const tempFileForUrl = await Deno.makeTempFile();
     const tempInfoByUrl = await Deno.stat(
       new URL(
-        `file://${Deno.build.os === "windows" ? "/" : ""}${tempFileForUrl}`
-      )
+        `file://${Deno.build.os === "windows" ? "/" : ""}${tempFileForUrl}`,
+      ),
     );
     now = Date.now();
     assert(
-      tempInfoByUrl.atime !== null && now - tempInfoByUrl.atime.valueOf() < 1000
+      tempInfoByUrl.atime !== null &&
+        now - tempInfoByUrl.atime.valueOf() < 1000,
     );
     assert(
-      tempInfoByUrl.mtime !== null && now - tempInfoByUrl.mtime.valueOf() < 1000
+      tempInfoByUrl.mtime !== null &&
+        now - tempInfoByUrl.mtime.valueOf() < 1000,
     );
     assert(
       tempInfoByUrl.birthtime === null ||
-        now - tempInfoByUrl.birthtime.valueOf() < 1000
+        now - tempInfoByUrl.birthtime.valueOf() < 1000,
     );
 
     Deno.removeSync(tempFile, { recursive: true });
     Deno.removeSync(tempFileForUrl, { recursive: true });
-  }
+  },
 );
 
 unitTest({ perms: { read: false } }, async function statPerm(): Promise<void> {
@@ -227,7 +233,7 @@ unitTest({ perms: { read: true } }, async function statNotFound(): Promise<
   await assertThrowsAsync(
     async (): Promise<void> => {
       await Deno.stat("bad_file_name"), Deno.errors.NotFound;
-    }
+    },
   );
 });
 
@@ -247,7 +253,7 @@ unitTest({ perms: { read: true } }, async function lstatSuccess(): Promise<
   assert(modulesInfo.isSymlink);
 
   const modulesInfoByUrl = await Deno.lstat(
-    pathToAbsoluteFileUrl("cli/tests/symlink_to_subdir")
+    pathToAbsoluteFileUrl("cli/tests/symlink_to_subdir"),
   );
   assert(!modulesInfoByUrl.isDirectory);
   assert(modulesInfoByUrl.isSymlink);
@@ -293,7 +299,7 @@ unitTest(
     assert(s.rdev === null);
     assert(s.blksize === null);
     assert(s.blocks === null);
-  }
+  },
 );
 
 unitTest(
@@ -317,5 +323,5 @@ unitTest(
     assert(s.rdev !== null);
     assert(s.blksize !== null);
     assert(s.blocks !== null);
-  }
+  },
 );

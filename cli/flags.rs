@@ -23,6 +23,7 @@ pub enum DenoSubcommand {
     buf: Box<[u8]>,
   },
   Doc {
+    private: bool,
     json: bool,
     source_file: Option<String>,
     filter: Option<String>,
@@ -38,6 +39,7 @@ pub enum DenoSubcommand {
   Fmt {
     check: bool,
     files: Vec<String>,
+    ignore: Vec<String>,
   },
   Help,
   Info {
@@ -100,6 +102,7 @@ pub struct Flags {
   pub ca_file: Option<String>,
   pub cached_only: bool,
   pub config_path: Option<String>,
+  pub ignore: Vec<String>,
   pub import_map_path: Option<String>,
   pub inspect: Option<SocketAddr>,
   pub inspect_brk: Option<SocketAddr>,
@@ -185,6 +188,7 @@ static ENV_VARIABLES_HELP: &str = "ENVIRONMENT VARIABLES:
     DENO_DIR             Set the cache directory
     DENO_INSTALL_ROOT    Set deno install's output directory
                          (defaults to $HOME/.deno/bin)
+    DENO_CERT            Load certificate authority from PEM encoded file
     NO_COLOR             Set to disable color
     HTTP_PROXY           Proxy address for HTTP requests
                          (module downloads, fetch)
@@ -336,18 +340,26 @@ fn types_parse(flags: &mut Flags, matches: &clap::ArgMatches) {
 }
 
 fn fmt_parse(flags: &mut Flags, matches: &clap::ArgMatches) {
+  // TODO(divy-work): remove `--unstable` in 1.3.0
+  unstable_arg_parse(flags, matches);
   let files = match matches.values_of("files") {
+    Some(f) => f.map(String::from).collect(),
+    None => vec![],
+  };
+  let ignore = match matches.values_of("ignore") {
     Some(f) => f.map(String::from).collect(),
     None => vec![],
   };
   flags.subcommand = DenoSubcommand::Fmt {
     check: matches.is_present("check"),
     files,
+    ignore,
   }
 }
 
 fn install_parse(flags: &mut Flags, matches: &clap::ArgMatches) {
   permission_args_parse(flags, matches);
+  config_arg_parse(flags, matches);
   ca_file_arg_parse(flags, matches);
   unstable_arg_parse(flags, matches);
 
@@ -456,7 +468,7 @@ fn info_parse(flags: &mut Flags, matches: &clap::ArgMatches) {
   ca_file_arg_parse(flags, matches);
   unstable_arg_parse(flags, matches);
   let json = matches.is_present("json");
-  no_check_arg_parse(flags, matches);
+  flags.no_check = true;
   flags.subcommand = DenoSubcommand::Info {
     file: matches.value_of("file").map(|f| f.to_string()),
     json,
@@ -598,12 +610,14 @@ fn doc_parse(flags: &mut Flags, matches: &clap::ArgMatches) {
   unstable_arg_parse(flags, matches);
 
   let source_file = matches.value_of("source_file").map(String::from);
+  let private = matches.is_present("private");
   let json = matches.is_present("json");
   let filter = matches.value_of("filter").map(String::from);
   flags.subcommand = DenoSubcommand::Doc {
     source_file,
     json,
     filter,
+    private,
   };
 }
 
@@ -654,6 +668,16 @@ Ignore formatting a file by adding an ignore comment at the top of the file:
         .takes_value(false),
     )
     .arg(
+      Arg::with_name("ignore")
+        .long("ignore")
+        .requires("unstable")
+        .takes_value(true)
+        .use_delimiter(true)
+        .require_equals(true)
+        .help("Ignore formatting particular source files. Use with --unstable"),
+    )
+    .arg(unstable_arg())
+    .arg(
       Arg::with_name("files")
         .takes_value(true)
         .multiple(true)
@@ -698,6 +722,7 @@ fn install_subcommand<'a, 'b>() -> App<'a, 'b> {
             .takes_value(false))
         .arg(ca_file_arg())
         .arg(unstable_arg())
+        .arg(config_arg())
         .about("Install script as an executable")
         .long_about(
 "Installs a script as an executable in the installation root's bin directory.
@@ -824,7 +849,10 @@ TypeScript compiler cache: Subdirectory containing TS compiler output.",
     )
     .arg(Arg::with_name("file").takes_value(true).required(false))
     .arg(ca_file_arg())
-    .arg(no_check_arg())
+    // TODO(nayeemrmn): `--no-check` has been removed for `deno info`, but it
+    // shouldn't cause flag parsing to fail for backward-compatibility. Remove
+    // this line for v2.0.0.
+    .arg(no_check_arg().hidden(true))
     .arg(unstable_arg())
     .arg(
       Arg::with_name("json")
@@ -915,6 +943,9 @@ fn doc_subcommand<'a, 'b>() -> App<'a, 'b> {
 Output documentation to standard output:
     deno doc ./path/to/module.ts
 
+Output private documentation to standard output:
+    deno doc --private ./path/to/module.ts
+
 Output documentation in JSON format:
     deno doc --json ./path/to/module.ts
 
@@ -930,6 +961,12 @@ Show documentation for runtime built-ins:
       Arg::with_name("json")
         .long("json")
         .help("Output documentation in JSON format.")
+        .takes_value(false),
+    )
+    .arg(
+      Arg::with_name("private")
+        .long("private")
+        .help("Output private documentation")
         .takes_value(false),
     )
     // TODO(nayeemrmn): Make `--builtin` a proper option. Blocked by
@@ -1650,6 +1687,7 @@ mod tests {
       r.unwrap(),
       Flags {
         subcommand: DenoSubcommand::Fmt {
+          ignore: vec![],
           check: false,
           files: vec!["script_1.ts".to_string(), "script_2.ts".to_string()]
         },
@@ -1662,6 +1700,7 @@ mod tests {
       r.unwrap(),
       Flags {
         subcommand: DenoSubcommand::Fmt {
+          ignore: vec![],
           check: true,
           files: vec![],
         },
@@ -1674,6 +1713,7 @@ mod tests {
       r.unwrap(),
       Flags {
         subcommand: DenoSubcommand::Fmt {
+          ignore: vec![],
           check: false,
           files: vec![],
         },
@@ -1795,6 +1835,7 @@ mod tests {
           json: false,
           file: Some("script.ts".to_string()),
         },
+        no_check: true,
         ..Flags::default()
       }
     );
@@ -1807,6 +1848,7 @@ mod tests {
           json: true,
           file: Some("script.ts".to_string()),
         },
+        no_check: true,
         ..Flags::default()
       }
     );
@@ -1819,6 +1861,7 @@ mod tests {
           json: false,
           file: None
         },
+        no_check: true,
         ..Flags::default()
       }
     );
@@ -1831,6 +1874,7 @@ mod tests {
           json: true,
           file: None
         },
+        no_check: true,
         ..Flags::default()
       }
     );
@@ -2360,6 +2404,32 @@ mod tests {
   }
 
   #[test]
+  fn install_with_config() {
+    let r = flags_from_vec_safe(svec![
+      "deno",
+      "install",
+      "--config",
+      "tsconfig.json",
+      "https://deno.land/std/examples/colors.ts"
+    ]);
+
+    assert_eq!(
+      r.unwrap(),
+      Flags {
+        subcommand: DenoSubcommand::Install {
+          name: None,
+          module_url: "https://deno.land/std/examples/colors.ts".to_string(),
+          args: svec![],
+          root: None,
+          force: false,
+        },
+        config_path: Some("tsconfig.json".to_owned()),
+        ..Flags::default()
+      }
+    )
+  }
+
+  #[test]
   fn install_with_args_and_dir_and_force() {
     let r = flags_from_vec_safe(svec![
       "deno",
@@ -2505,6 +2575,50 @@ mod tests {
       Flags {
         subcommand: DenoSubcommand::Run {
           script: "script.ts".to_string(),
+        },
+        no_check: true,
+        ..Flags::default()
+      }
+    );
+    let r =
+      flags_from_vec_safe(svec!["deno", "test", "--no-check", "script.ts"]);
+    assert_eq!(
+      r.unwrap(),
+      Flags {
+        subcommand: DenoSubcommand::Test {
+          fail_fast: false,
+          filter: None,
+          allow_none: false,
+          quiet: false,
+          include: Some(svec!["script.ts"]),
+        },
+        no_check: true,
+        ..Flags::default()
+      }
+    );
+    let r =
+      flags_from_vec_safe(svec!["deno", "cache", "--no-check", "script.ts"]);
+    assert_eq!(
+      r.unwrap(),
+      Flags {
+        subcommand: DenoSubcommand::Cache {
+          files: svec!["script.ts"],
+        },
+        no_check: true,
+        ..Flags::default()
+      }
+    );
+    // TODO(nayeemrmn): `--no-check` has been removed for `deno info`, but it
+    // shouldn't cause flag parsing to fail for backward-compatibility. Remove
+    // this test for v2.0.0.
+    let r =
+      flags_from_vec_safe(svec!["deno", "info", "--no-check", "script.ts"]);
+    assert_eq!(
+      r.unwrap(),
+      Flags {
+        subcommand: DenoSubcommand::Info {
+          json: false,
+          file: Some("script.ts".to_string()),
         },
         no_check: true,
         ..Flags::default()
@@ -2830,6 +2944,7 @@ mod tests {
           file: Some("https://example.com".to_string()),
         },
         ca_file: Some("example.crt".to_owned()),
+        no_check: true,
         ..Flags::default()
       }
     );
@@ -2910,6 +3025,7 @@ mod tests {
       r.unwrap(),
       Flags {
         subcommand: DenoSubcommand::Doc {
+          private: false,
           json: true,
           source_file: Some("path/to/module.ts".to_string()),
           filter: None,
@@ -2928,6 +3044,7 @@ mod tests {
       r.unwrap(),
       Flags {
         subcommand: DenoSubcommand::Doc {
+          private: false,
           json: false,
           source_file: Some("path/to/module.ts".to_string()),
           filter: Some("SomeClass.someField".to_string()),
@@ -2941,6 +3058,7 @@ mod tests {
       r.unwrap(),
       Flags {
         subcommand: DenoSubcommand::Doc {
+          private: false,
           json: false,
           source_file: None,
           filter: None,
@@ -2955,9 +3073,29 @@ mod tests {
       r.unwrap(),
       Flags {
         subcommand: DenoSubcommand::Doc {
+          private: false,
           json: false,
           source_file: Some("--builtin".to_string()),
           filter: Some("Deno.Listener".to_string()),
+        },
+        ..Flags::default()
+      }
+    );
+
+    let r = flags_from_vec_safe(svec![
+      "deno",
+      "doc",
+      "--private",
+      "path/to/module.js"
+    ]);
+    assert_eq!(
+      r.unwrap(),
+      Flags {
+        subcommand: DenoSubcommand::Doc {
+          private: true,
+          json: false,
+          source_file: Some("path/to/module.js".to_string()),
+          filter: None,
         },
         ..Flags::default()
       }

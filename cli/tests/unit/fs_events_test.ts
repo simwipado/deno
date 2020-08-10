@@ -1,5 +1,5 @@
 // Copyright 2018-2019 the Deno authors. All rights reserved. MIT license.
-import { unitTest, assert, assertThrows } from "./test_util.ts";
+import { unitTest, assert, assertEquals, assertThrows } from "./test_util.ts";
 
 // TODO(ry) Add more tests to specify format.
 
@@ -16,7 +16,7 @@ unitTest({ perms: { read: true } }, function watchFsInvalidPath() {
         Deno.watchFs("non-existant.file");
       },
       Error,
-      "Input watch path is neither a file nor a directory"
+      "Input watch path is neither a file nor a directory",
     );
   } else {
     assertThrows(() => {
@@ -26,7 +26,7 @@ unitTest({ perms: { read: true } }, function watchFsInvalidPath() {
 });
 
 async function getTwoEvents(
-  iter: AsyncIterableIterator<Deno.FsEvent>
+  iter: AsyncIterableIterator<Deno.FsEvent>,
 ): Promise<Deno.FsEvent[]> {
   const events = [];
   for await (const event of iter) {
@@ -58,5 +58,23 @@ unitTest(
     assert(events[0].paths[0].includes(testDir));
     assert(events[1].kind == "create" || events[1].kind == "modify");
     assert(events[1].paths[0].includes(testDir));
-  }
+  },
+);
+
+unitTest(
+  { perms: { read: true, write: true } },
+  async function watchFsReturn(): Promise<void> {
+    const testDir = await Deno.makeTempDir();
+    const iter = Deno.watchFs(testDir);
+
+    // Asynchronously loop events.
+    const eventsPromise = getTwoEvents(iter);
+
+    // Close the watcher.
+    await iter.return!();
+
+    // Expect zero events.
+    const events = await eventsPromise;
+    assertEquals(events, []);
+  },
 );

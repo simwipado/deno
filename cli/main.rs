@@ -11,6 +11,7 @@ extern crate futures;
 extern crate serde_json;
 extern crate clap;
 extern crate deno_core;
+extern crate encoding_rs;
 extern crate indexmap;
 #[cfg(unix)]
 extern crate nix;
@@ -49,6 +50,7 @@ mod metrics;
 mod module_graph;
 pub mod msg;
 pub mod op_error;
+mod op_fetch_asset;
 pub mod ops;
 pub mod permissions;
 mod repl;
@@ -59,6 +61,7 @@ mod startup_data;
 pub mod state;
 mod swc_util;
 mod test_runner;
+mod text_encoding;
 mod tokio_util;
 mod tsc;
 mod upgrade;
@@ -66,13 +69,10 @@ pub mod version;
 mod web_worker;
 pub mod worker;
 
-pub use dprint_plugin_typescript::swc_common;
-pub use dprint_plugin_typescript::swc_ecma_ast;
-pub use dprint_plugin_typescript::swc_ecma_parser;
-
 use crate::doc::parser::DocFileLoader;
 use crate::file_fetcher::SourceFile;
 use crate::file_fetcher::SourceFileFetcher;
+use crate::file_fetcher::TextDocument;
 use crate::fs as deno_fs;
 use crate::global_state::GlobalState;
 use crate::msg::MediaType;
@@ -96,6 +96,7 @@ use state::exit_unstable;
 use std::env;
 use std::io::Read;
 use std::io::Write;
+use std::iter::once;
 use std::path::PathBuf;
 use std::pin::Pin;
 use upgrade::upgrade_command;
@@ -286,22 +287,19 @@ async fn print_file_info(
 }
 
 fn get_types(unstable: bool) -> String {
+  let mut types = format!(
+    "{}\n{}\n{}\n{}",
+    crate::js::DENO_NS_LIB,
+    crate::js::DENO_WEB_LIB,
+    crate::js::SHARED_GLOBALS_LIB,
+    crate::js::WINDOW_LIB,
+  );
+
   if unstable {
-    format!(
-      "{}\n{}\n{}\n{}",
-      crate::js::DENO_NS_LIB,
-      crate::js::SHARED_GLOBALS_LIB,
-      crate::js::WINDOW_LIB,
-      crate::js::UNSTABLE_NS_LIB,
-    )
-  } else {
-    format!(
-      "{}\n{}\n{}",
-      crate::js::DENO_NS_LIB,
-      crate::js::SHARED_GLOBALS_LIB,
-      crate::js::WINDOW_LIB,
-    )
+    types.push_str(&format!("\n{}", crate::js::UNSTABLE_NS_LIB,));
   }
+
+  types
 }
 
 async fn info_command(
@@ -348,20 +346,9 @@ async fn lint_command(
   files: Vec<String>,
   list_rules: bool,
 ) -> Result<(), ErrBox> {
-  let global_state = GlobalState::new(flags)?;
-
-  // TODO(bartlomieju): refactor, it's non-sense to create
-  // state just to perform unstable check...
-  use crate::state::State;
-  let state = State::new(
-    global_state,
-    None,
-    ModuleSpecifier::resolve_url("file:///dummy.ts").unwrap(),
-    None,
-    true,
-  )?;
-
-  state.check_unstable("lint");
+  if !flags.unstable {
+    exit_unstable("lint");
+  }
 
   if list_rules {
     lint::print_rules_list();
@@ -396,13 +383,14 @@ async fn eval_command(
   let main_module =
     ModuleSpecifier::resolve_url_or_path("./__$deno$eval.ts").unwrap();
   let global_state = GlobalState::new(flags)?;
-  let mut worker = MainWorker::create(global_state, main_module.clone())?;
+  let mut worker =
+    MainWorker::create(global_state.clone(), main_module.clone())?;
   let main_module_url = main_module.as_url().to_owned();
   // Create a dummy source file.
   let source_code = if print {
-    "console.log(".to_string() + &code + ")"
+    format!("console.log({})", code)
   } else {
-    code.clone()
+    code
   }
   .into_bytes();
 
@@ -415,14 +403,11 @@ async fn eval_command(
     } else {
       MediaType::JavaScript
     },
-    source_code,
+    source_code: TextDocument::new(source_code, Some("utf-8")),
   };
   // Save our fake file into file fetcher cache
-  // to allow module access by TS compiler (e.g. op_fetch_source_files)
-  worker
-    .state
-    .borrow()
-    .global_state
+  // to allow module access by TS compiler.
+  global_state
     .file_fetcher
     .save_source_file_in_cache(&main_module, source_file);
   debug!("main_module {}", &main_module);
@@ -438,16 +423,7 @@ async fn bundle_command(
   source_file: String,
   out_file: Option<PathBuf>,
 ) -> Result<(), ErrBox> {
-  let mut module_specifier =
-    ModuleSpecifier::resolve_url_or_path(&source_file)?;
-  let url = module_specifier.as_url();
-
-  // TODO(bartlomieju): fix this hack in ModuleSpecifier
-  if url.scheme() == "file" {
-    let a = deno_fs::normalize_path(&url.to_file_path().unwrap());
-    let u = Url::from_file_path(a).unwrap();
-    module_specifier = ModuleSpecifier::from(u)
-  }
+  let module_specifier = ModuleSpecifier::resolve_url_or_path(&source_file)?;
 
   debug!(">>>>> bundle START");
   let global_state = GlobalState::new(flags)?;
@@ -519,6 +495,7 @@ async fn doc_command(
   source_file: Option<String>,
   json: bool,
   maybe_filter: Option<String>,
+  private: bool,
 ) -> Result<(), ErrBox> {
   let global_state = GlobalState::new(flags.clone())?;
   let source_file = source_file.unwrap_or_else(|| "--builtin".to_string());
@@ -528,23 +505,22 @@ async fn doc_command(
       &self,
       specifier: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, OpError>>>> {
-      let specifier =
-        ModuleSpecifier::resolve_url_or_path(specifier).expect("Bad specifier");
       let fetcher = self.clone();
-
+      let specifier = specifier.to_string();
       async move {
+        let specifier = ModuleSpecifier::resolve_url_or_path(&specifier)
+          .map_err(OpError::from)?;
         let source_file = fetcher
           .fetch_source_file(&specifier, None, Permissions::allow_all())
           .await?;
-        String::from_utf8(source_file.source_code)
-          .map_err(|_| OpError::other("failed to parse".to_string()))
+        source_file.source_code.to_string().map_err(OpError::from)
       }
       .boxed_local()
     }
   }
 
   let loader = Box::new(global_state.file_fetcher.clone());
-  let doc_parser = doc::DocParser::new(loader);
+  let doc_parser = doc::DocParser::new(loader, private);
 
   let parse_result = if source_file == "--builtin" {
     doc_parser.parse_source("lib.deno.d.ts", get_types(flags.unstable).as_str())
@@ -574,13 +550,9 @@ async fn doc_command(
         eprintln!("Node {} was not found!", filter);
         std::process::exit(1);
       }
-      let mut details = String::new();
-      for node in nodes {
-        details.push_str(doc::printer::format_details(node).as_str());
-      }
-      details
+      format!("{}", doc::DocPrinter::new(&nodes, true, private))
     } else {
-      doc::printer::format(doc_nodes)
+      format!("{}", doc::DocPrinter::new(&doc_nodes, false, private))
     };
 
     write_to_stdout_ignore_sigpipe(details.as_bytes()).map_err(ErrBox::from)
@@ -616,14 +588,11 @@ async fn run_command(flags: Flags, script: String) -> Result<(), ErrBox> {
       url: main_module_url,
       types_header: None,
       media_type: MediaType::TypeScript,
-      source_code: source,
+      source_code: source.into(),
     };
     // Save our fake file into file fetcher cache
-    // to allow module access by TS compiler (e.g. op_fetch_source_files)
-    worker
-      .state
-      .borrow()
-      .global_state
+    // to allow module access by TS compiler
+    global_state
       .file_fetcher
       .save_source_file_in_cache(&main_module, source_file);
   };
@@ -672,14 +641,14 @@ async fn test_command(
     url: test_file_url,
     types_header: None,
     media_type: MediaType::TypeScript,
-    source_code: test_file.clone().into_bytes(),
+    source_code: TextDocument::new(
+      test_file.clone().into_bytes(),
+      Some("utf-8"),
+    ),
   };
   // Save our fake file into file fetcher cache
-  // to allow module access by TS compiler (e.g. op_fetch_source_files)
-  worker
-    .state
-    .borrow()
-    .global_state
+  // to allow module access by TS compiler
+  global_state
     .file_fetcher
     .save_source_file_in_cache(&main_module, source_file);
   let execute_result = worker.execute_module(&main_module).await;
@@ -698,9 +667,27 @@ pub fn main() {
   let flags = flags::flags_from_vec(args);
 
   if let Some(ref v8_flags) = flags.v8_flags {
-    let mut v8_flags_ = v8_flags.clone();
-    v8_flags_.insert(0, "UNUSED_BUT_NECESSARY_ARG0".to_string());
-    v8_set_flags(v8_flags_);
+    let v8_flags_includes_help = v8_flags
+      .iter()
+      .any(|flag| flag == "-help" || flag == "--help");
+    let v8_flags = once("UNUSED_BUT_NECESSARY_ARG0".to_owned())
+      .chain(v8_flags.iter().cloned())
+      .collect::<Vec<_>>();
+    let unrecognized_v8_flags = v8_set_flags(v8_flags)
+      .into_iter()
+      .skip(1)
+      .collect::<Vec<_>>();
+    if !unrecognized_v8_flags.is_empty() {
+      for f in unrecognized_v8_flags {
+        eprintln!("error: V8 did not recognize flag '{}'", f);
+      }
+      eprintln!();
+      eprintln!("For a list of V8 flags, use '--v8-flags=--help'");
+      std::process::exit(1);
+    }
+    if v8_flags_includes_help {
+      std::process::exit(0);
+    }
   }
 
   let log_level = match flags.log_level {
@@ -718,7 +705,8 @@ pub fn main() {
       source_file,
       json,
       filter,
-    } => doc_command(flags, source_file, json, filter).boxed_local(),
+      private,
+    } => doc_command(flags, source_file, json, filter, private).boxed_local(),
     DenoSubcommand::Eval {
       print,
       code,
@@ -727,9 +715,11 @@ pub fn main() {
     DenoSubcommand::Cache { files } => {
       cache_command(flags, files).boxed_local()
     }
-    DenoSubcommand::Fmt { check, files } => {
-      fmt::format(files, check).boxed_local()
-    }
+    DenoSubcommand::Fmt {
+      check,
+      files,
+      ignore,
+    } => fmt::format(files, check, ignore).boxed_local(),
     DenoSubcommand::Info { file, json } => {
       info_command(flags, file, json).boxed_local()
     }
